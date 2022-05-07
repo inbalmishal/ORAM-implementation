@@ -1,10 +1,8 @@
 import socket
 import select
 import json
+from constants import SERVER_IP, SERVER_PORT, MESSAGE_SIZE
 
-SERVER_IP = "127.0.0.1"  # Standard loopback interface address (localhost)
-SERVER_PORT = 65432  # Port to listen on (non-privileged ports are > 1023)
-MESSAGE_SIZE = 100000000
 
 
 def class_to_str(object):
@@ -32,8 +30,9 @@ class Server:
 
     def start_serv(self):
         def initial_upload():
-            self.all_data[0].append(content)
-            messages_to_send.append((current_socket, "Action succeeded"))
+            self.all_data[current_socket.getpeername()].append(content)
+            messages_to_send.append((current_socket, f"Action succeeded - "
+                                                     f"{len(self.all_data[current_socket.getpeername()])}"))
 
         def get_path():
             leaf_idx = int(content)
@@ -41,7 +40,7 @@ class Server:
             i = leaf_idx
 
             while i >= 0:
-                leaf_path.append(self.all_data[0][i])
+                leaf_path.append(self.all_data[current_socket.getpeername()][i])
                 i = (i - 1) // 2
 
             # send the leaf path
@@ -56,7 +55,7 @@ class Server:
             i = leaf_idx
 
             for j in range(len(new_path)):
-                self.all_data[0][i] = new_path[j]
+                self.all_data[current_socket.getpeername()][i] = new_path[j]
                 i = (i - 1) // 2
                 j += 1
 
@@ -81,8 +80,7 @@ class Server:
                         print("New client joined!", client_address)
 
                         # add the client to "all_data" dict
-                        self.all_data[0] = []
-
+                        self.all_data[connection.getpeername()] = []
                         client_sockets.append(connection)
                         self.print_client_sockets(client_sockets)
 
@@ -116,12 +114,6 @@ class Server:
                                 elif action == "upload_file":
                                     upload_file()
 
-                                elif action == "get_file":
-                                    get_path()
-
-                                elif action == "delete_file":
-                                    get_path()
-                                    pass
 
                             except Exception as e:
                                 messages_to_send.append((current_socket, f"Action Failed + {e}"))

@@ -1,6 +1,7 @@
 from tkinter import messagebox
 from tkinter import *
 import tkinter as tk
+import sys
 
 # from  import Client
 from model.client import Client
@@ -14,11 +15,13 @@ def on_closing(root, client):
     elif messagebox.askokcancel("Quit", "Do you want to quit?"):
         client.close_connection()
         root.destroy()
+    sys.exit()
 
 
 def zero_page():
     def getInput(files_num_text):
         try:
+            window.protocol("WM_DELETE_WINDOW", lambda: on_closing(window, None))
             n = files_num_text.get("1.0", "end-1c")
             if int(n) <= 0:
                 raise Exception("The number needs to be positive")
@@ -28,6 +31,7 @@ def zero_page():
             messagebox.showinfo('Error: ', e)
 
     window = Tk()
+    window.protocol("WM_DELETE_WINDOW", lambda: on_closing(window, None))
     window.title('Client')
     window.geometry('360x400')
     window.configure(bg='#4a7abc')
@@ -39,7 +43,6 @@ def zero_page():
     btn1 = Button(window, bg='white', text="Send",
                   command=lambda: getInput(files_num_text)).pack()  # first_page(client, window))
 
-    window.protocol("WM_DELETE_WINDOW", lambda: on_closing(window, None))
     window.mainloop()
 
 

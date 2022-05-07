@@ -10,13 +10,7 @@ import json
 import string
 import random
 import math
-
-SERVER_IP = "127.0.0.1"  # The server's hostname or IP address
-SERVER_PORT = 65432  # The port used by the server
-FILE_SIZE = 512
-MESSAGE_SIZE = 100000000
-NUM_OF_LOGS_IN_BUCKET = 1
-
+from model.constants import *
 
 class Client:
     def __init__(self, n):
@@ -31,8 +25,8 @@ class Client:
 
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.client_socket.connect((SERVER_IP, SERVER_PORT))
-        self.files_num = n  # => 2^n - 1 nodes in the tree, n leaves
-        self.stash = []
+        self.files_num = n  # => 2*n - 1 nodes in the tree, n leaves
+        self.stash = {}
         self.all_files = {}
         self.generate_tree()
 
@@ -49,11 +43,9 @@ class Client:
         return leaf_path
 
     def try_upload_stash(self):
-        if len(self.stash) > 0:
-            idx_to_remove = []
-            for (i, server_file) in enumerate(self.stash):
+        if self.stash:
+            for filename in self.stash.keys():
                 leaf = self.get_random_leaf()
-                filename = server_file.filename
                 client_file = self.all_files[filename]
                 client_file.leaf = leaf
 
@@ -77,10 +69,10 @@ class Client:
                     print(f"{filename} stays in the stash")
                 else:
                     idx = buckets[bucket_idx].num_real_files
-                    buckets[bucket_idx].files[idx] = server_file
+                    buckets[bucket_idx].files[idx] = self.stash[filename]
                     buckets[bucket_idx].num_real_files += 1
                     # remove the item from the stash
-                    idx_to_remove.append(i)
+                    del self.stash[filename]
 
                     # encrypt the whole path again
                     encrypted_buckets = []
@@ -97,14 +89,11 @@ class Client:
 
                     self.all_files[filename].leaf = leaf
 
-            for idx in idx_to_remove:
-                del self.stash[idx]
-
     def upload_file(self, filepath, filename):
         leaf = self.get_random_leaf()
 
-        client_file = ClientFile(filepath, leaf)
-        server_file = ServerFile(filename, client_file.padding().decode())
+        client_file = ClientFile(filename, filepath, leaf)
+        server_file = ServerFile(client_file.pad_filename(filename), client_file.pad_data().decode())
 
         if filename in self.all_files.keys():
             raise Exception("This file already exists")
@@ -131,9 +120,8 @@ class Client:
                 else:
                     print(f"add {filename} to the stash")
                     client_file.leaf = -1
-                    client_file.stash_idx = len(self.stash)
                     self.all_files[filename] = client_file
-                    self.stash.append(server_file)
+                    self.stash[filename] = server_file
             else:
                 idx = buckets[bucket_idx].num_real_files
                 buckets[bucket_idx].files[idx] = server_file
@@ -161,11 +149,10 @@ class Client:
         leaf = client_file.leaf
 
         if leaf == -1:  # the file is in the stash
-            idx = client_file.stash_idx
-            file = self.stash[idx]
+            file = self.stash[filename]
             return file, client_file.real_size
 
-        action = "get_file "
+        action = "get_path "
         message = action.encode() + str(leaf).encode()
 
         self.client_socket.send(message)
@@ -187,7 +174,7 @@ class Client:
             for file_str in bucket.files:
                 file = str_to_class(file_str)
                 if type(file) is ServerFile:
-                    if file.filename == filename:
+                    if file.filename == client_file.padded_name:
                         final_res = file
 
         action = 'upload_file '
@@ -200,6 +187,7 @@ class Client:
         if final_res == -1:
             return None
         elif self.check_file(filename, final_res.data):
+            final_res.filename = filename
             return final_res, client_file.real_size
         else:
             raise Exception("Someone changed your file")
@@ -218,40 +206,44 @@ class Client:
         f = self.all_files[filename]
         leaf = f.leaf
 
-        action = "delete_file "
-        message = action.encode() + str(leaf).encode()
+        # if the file in the stash
+        if leaf == -1:  # the file is in the stash
+            del self.stash[filename]
+            del self.all_files[filename]
+        else:
+            action = "get_path "
+            message = action.encode() + str(leaf).encode()
 
-        self.client_socket.send(message)
-        path_str = self.client_socket.recv(MESSAGE_SIZE).decode()
-        path = str_to_class(path_str)
+            self.client_socket.send(message)
+            path_str = self.client_socket.recv(MESSAGE_SIZE).decode()
+            path = str_to_class(path_str)
 
-        new_buckets = []
-        # decrypt the path
-        for encrypted_bucket in path:
-            # decrypt each bucket
-            bucket_str = self.decrypt_class(encode_class(encrypted_bucket))
-            bucket = str_to_class(bucket_str)
+            new_buckets = []
+            # decrypt the path
+            for encrypted_bucket in path:
+                # decrypt each bucket
+                bucket_str = self.decrypt_class(encode_class(encrypted_bucket))
+                bucket = str_to_class(bucket_str)
 
-            for (i, file_str) in enumerate(bucket.files):
-                file = str_to_class(file_str)
-                if type(file) is ServerFile:
-                    if file.filename == filename:
-                        bucket.files[i] = generate_dummy()
+                for (i, file_str) in enumerate(bucket.files):
+                    file = str_to_class(file_str)
+                    if type(file) is ServerFile:
+                        if file.filename == f.padded_name:
+                            bucket.files[i] = generate_dummy()
+                            bucket.num_real_files -= 1
 
-            bucket.num_real_files -= 1
+                # encrypt the buckets again
+                encrypted_new_bucket = self.encrypt_class(bucket)
+                new_buckets.append(decode_class(encrypted_new_bucket))
 
-            # encrypt the buckets again
-            encrypted_new_bucket = self.encrypt_class(bucket)
-            new_buckets.append(decode_class(encrypted_new_bucket))
+            # upload the path
+            action = 'upload_file '
+            message = action.encode() + (str(leaf) + " ").encode() + encode_class(new_buckets)
 
-        # upload the path
-        action = 'upload_file '
-        message = action.encode() + (str(leaf) + " ").encode() + encode_class(new_buckets)
-
-        self.client_socket.send(message)
-        res = self.client_socket.recv(MESSAGE_SIZE).decode()
-        print(f"res: {res}, filename: {filename}")
-        del self.all_files[filename]
+            self.client_socket.send(message)
+            res = self.client_socket.recv(MESSAGE_SIZE).decode()
+            print(f"res: {res}, filename: {filename}")
+            del self.all_files[filename]
 
     def get_random_leaf(self):
         def Diff(li1, li2):
@@ -288,7 +280,7 @@ class Client:
             bucket_encrypted = self.encrypt_class(bucket)
             return bucket_encrypted
 
-        for i in range((int(math.pow(2, self.files_num)) - 1)):
+        for i in range(int(2 * self.files_num - 1)):
             dummy_bucket = generate_bucket()
             upload_dummy_bucket(dummy_bucket)
 
@@ -311,7 +303,7 @@ class Client:
         return decrypted_data.decode()
 
 def generate_dummy():
-    ran = ''.join(random.choices(string.ascii_letters + string.digits + string.punctuation, k=FILE_SIZE))
+    ran = ''.join(random.choices(string.ascii_letters + string.digits + string.punctuation, k=DUMMY_SIZE))
     return ran
 
 def encode_class(object):
@@ -392,5 +384,3 @@ def str_to_class(json_string):
         object = ob_str
 
     return object
-
-# C:\Users\inbal\Desktop\semester 2\security_course\ex1\in.txt
